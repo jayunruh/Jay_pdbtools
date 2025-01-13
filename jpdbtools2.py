@@ -50,22 +50,94 @@ def fixPDB(fname):
         fpos=findBadLine(lines)
     return ''.join(lines)
 
-def getpdbdf(fpath,skiprows=0,skipend=False):
+def getpdbdffromstr(pdbstr,skiprows=0,skipend=False):
     '''
     this is for pdb files with one model and no header
     for models with a header need to search for the initial row (don't do that for now)
+    output columns are type,atom,atype,resname,chain,residue,x,y,z,unk,temp,element
     '''
     #read the file
     cnames=['type','atom','atype','resname','chain','residue','x','y','z','unk','temp','element']
     #note that the index_col=False here forces it not to use an index column
-    sio=StringIO(fixPDB(fpath))
-    pdbdf=pd.read_csv(sio,delim_whitespace=True,header=None,skiprows=skiprows,
+    sio=StringIO(pdbstr)
+    pdbdf=pd.read_csv(sio,sep='\s+',header=None,skiprows=skiprows,
                       names=cnames,on_bad_lines='skip',index_col=False)
     #label the columns
     #optionally eliminate the "end" and "ter" rows
     if(skipend):
         pdbdf=pdbdf.iloc[:-2]
     return pdbdf
+
+def getpdbdf(fpath,skiprows=0,skipend=False):
+    '''
+    this is for pdb files with one model and no header
+    for models with a header need to search for the initial row (don't do that for now)
+    output columns are type,atom,atype,resname,chain,residue,x,y,z,unk,temp,element
+    '''
+    #read the file
+    cnames=['type','atom','atype','resname','chain','residue','x','y','z','unk','temp','element']
+    pdbstr=fixPDB(fpath)
+    return getpdbdffromstr(pdbstr,skiprows=skiprows,skipend=skipend)
+
+def splitLines(lines,splitstart):
+    '''
+    splits a set of lines around lines that start with splitstart
+    '''
+    segments=[]
+    currseg=[]
+    for i in range(0,len(lines)):
+        if(not lines[i].startswith(splitstart)):
+            currseg.append(lines[i])
+        else:
+            segments.append(currseg)
+            currseg=[]
+    segments.append(currseg)
+    return segments
+
+def starRecordDF(lines):
+    '''
+    reads a star record into a dataframe
+    omit lines that start with #
+    '''
+    lines2=[line for line in lines if not line.startswith('#')]
+    #first read the header lines that start with _
+    header=[]
+    pos=0
+    while(lines2[pos].startswith('_')):
+        header.append(lines2[pos].split('.')[-1])
+        pos+=1
+    #now read the other lines with pandas
+    sio=StringIO('\n'.join(lines2[pos:]))
+    df=pd.read_csv(sio,sep='\s+',header=None,names=header)
+    return df
+
+def getmmcifdfs(fname):
+    '''
+    read only the coordinate information from a mmcif file and return as dataframes
+    output columns are type,atom,atype,resname,chain,residue,x,y,z,unk,temp,element
+    '''
+    with open(fname) as f:
+        lines=f.readlines()
+        lines=[line[:-1] for line in lines]
+    #split the file on _loop records
+    loops=splitLines(lines,'loop_')
+    #now find the loops that start with _atom_site.group_PDB
+    pdbloops=[]
+    for i in range(len(loops)):
+        if(loops[i][0].startswith('_atom_site.group_PDB')):
+            pdbloops.append(loops[i])
+    pdbdfs=[]
+    for i in range(len(pdbloops)):
+        pdbdf=starRecordDF(pdbloops[i])
+        #get the subset of desired columns
+        pdbdf=pdbdf[['group_PDB','id','label_atom_id','label_comp_id','label_asym_id','label_seq_id',
+               'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']]
+        #rename to my standard names
+        pdbdf=pdbdf.rename(columns={'group_PDB':'type','id':'atom','label_atom_id':'atype','label_comp_id':'resname',
+                       'label_asym_id':'chain','label_seq_id':'residue','Cartn_x':'x','Cartn_y':'y','Cartn_z':'z',
+                       'occupancy':'unk','B_iso_or_equiv':'temp','type_symbol':'element'})
+        pdbdfs.append(pdbdf)
+    return pdbdfs
 
 def enforcedtypes(pdbdf):
     '''
@@ -89,7 +161,7 @@ def cleanpdbdf(pdbdf):
     '''
     return enforcedtypes(pdbdf[pdbdf['type']=='ATOM'].reset_index(drop=True))
 
-def writepdbdf(df,outpath=None,verbose=False):
+def writepdbdf(df,outpath=None,verbose=False,useter=True):
     '''
     #this needs to be a space delimited aligned file whereonly x,y,z,unk, and temp are floating point
     #the coordinates have 3 decimals and unk and temp have 2
@@ -97,7 +169,7 @@ def writepdbdf(df,outpath=None,verbose=False):
     #there are two spaces to the far right
     '''
     #not sure if I need a TER row and an END row at the end
-    cw=[4,7,5,4,2,4,12,8,8,6,6,12]
+    cw=[6,5,5,4,2,4,12,8,8,6,6,12]
 
     def padInt(intval,totlen):
         fstr='{:'+str(totlen)+'}'
@@ -130,10 +202,11 @@ def writepdbdf(df,outpath=None,verbose=False):
         if(verbose):
             print(tstr)
     lastrow=df.iloc[-1]
-    tstr=padStr('TER',cw[0])+padInt(int(lastrow['atom'])+1,cw[1])+padStr(lastrow['resname'],cw[2]+cw[3],True)
-    tstr+=padStr(lastrow['chain'],cw[4],True)+padInt(int(lastrow['residue']),cw[5])
-    tstr+=''.join([' ']*54)
-    pdbstr+=tstr+'\n'
+    if(useter):
+        tstr=padStr('TER',cw[0])+padInt(int(lastrow['atom'])+1,cw[1])+padStr(lastrow['resname'],cw[2]+cw[3],True)
+        tstr+=padStr(lastrow['chain'],cw[4],True)+padInt(int(lastrow['residue']),cw[5])
+        tstr+=''.join([' ']*54)
+        pdbstr+=tstr+'\n'
     pdbstr+='END   '
     if(outpath is not None):
         with open(outpath,'w') as f:
@@ -322,7 +395,7 @@ def alignFullRMSD(pdbdf1,pdbdf2,aset='ca'):
     shiftdf1.loc[:,['x','y','z']]-=com1
     shiftdf2.loc[:,['x','y','z']]-=com2
     trans2=trans.apply(shiftdf2.loc[:,['x','y','z']]/10)
-    shiftdf2.loc[:,['x','y','z']]=trans2*10
+    shiftdf2.loc[:,['x','y','z']]=(trans2*10).astype(np.float32)
     return shiftdf1,shiftdf2
 
 def transformpdbdf(pdbdf,com,trans=None,comdest=None):
@@ -335,7 +408,7 @@ def transformpdbdf(pdbdf,com,trans=None,comdest=None):
     shiftdf.loc[:,['x','y','z']]-=com
     if(trans is not None):
         trans2=trans.apply(shiftdf.loc[:,['x','y','z']]/10)
-        shiftdf.loc[:,['x','y','z']]=trans2*10
+        shiftdf.loc[:,['x','y','z']]=(trans2*10).astype(np.float32)
     if(comdest is not None):
         shiftdf.loc[:,['x','y','z']]+=comdest
     return shiftdf
@@ -356,7 +429,7 @@ def alignRMSD(pdbdf1,pdbdf2):
     #now get the transformation matrix
     trans,rms=ss.transform.Rotation.align_vectors(shiftdf1.loc[:,['x','y','z']]/10,shiftdf2.loc[:,['x','y','z']]/10)
     trans2=trans.apply(shiftdf2.loc[:,['x','y','z']]/10)
-    shiftdf2.loc[:,['x','y','z']]=trans2*10
+    shiftdf2.loc[:,['x','y','z']]=(trans2*10).astype(np.float32)
     return shiftdf1,shiftdf2,trans,getRMSD(shiftdf1,shiftdf2),com1,com2
 
 def alignShiftRMSD(pdbdf1,pdbdf2,minshift=-10,maxshift=10):
@@ -388,7 +461,7 @@ def alignShiftRMSD(pdbdf1,pdbdf2,minshift=-10,maxshift=10):
                 b2=a2
     return minrmsd,bshift,b1,b2
 
-def getMolecularSurface(pdbdf,resolution=0.25,vdwrad=2.6):
+def getMolecularSurface(pdbdf,resolution=0.25,vdwrad=2.6,fillholes=True):
     '''
     Takes a pdbdf and turns it into a 3d mask on a grid determined by resolution (angstroms) and protein extent
     returns the surface (3d ndarray) and z,y,x start coordinates
@@ -415,7 +488,9 @@ def getMolecularSurface(pdbdf,resolution=0.25,vdwrad=2.6):
     xpos=np.floor((coords['x']-spanstart[2])/resolution).astype(int)
     mask[zpos,ypos,xpos]=False
     surf=ndi.distance_transform_edt(mask)<=srad
-    return ndi.binary_fill_holes(surf),spanstart
+    if(fillholes):
+        surf=ndi.binary_fill_holes(surf)
+    return surf,spanstart
 
 def getSurfaceDistance(coords,surf,spanstart,resolution=0.25):
     '''
@@ -491,11 +566,11 @@ def getDihedral(coords):
     vec1=coords[0]-coords[1]
     vec2=coords[2]-coords[1]
     norm1=np.cross(vec1,vec2)
-    print('norm1',norm1)
+    #print('norm1',norm1)
     vec3=coords[1]-coords[2]
     vec4=coords[3]-coords[2]
     norm2=np.cross(vec3,vec4)
-    print('norm2',norm2)
+    #print('norm2',norm2)
     len1=np.sqrt((norm1**2).sum())
     len2=np.sqrt((norm2**2).sum())
     #now get the angle between the normals (dot-prod/length product)
