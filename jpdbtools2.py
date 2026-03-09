@@ -50,6 +50,18 @@ def fixPDB(fname):
         fpos=findBadLine(lines)
     return ''.join(lines)
 
+def fixTer(pdbdf):
+    '''
+    fix the TER entries since they don't have atom names
+    just left shift the resname, chain, and residue columns
+    '''
+    teridx=(pdbdf['type']=='TER').values
+    pdbdf.iloc[teridx,5]=pdbdf.iloc[teridx,4].astype(pdbdf.iloc[teridx,5].dtype)
+    pdbdf.iloc[teridx,4]=pdbdf.iloc[teridx,3].astype(pdbdf.iloc[teridx,4].dtype)
+    pdbdf.iloc[teridx,3]=pdbdf.iloc[teridx,2].astype(pdbdf.iloc[teridx,3].dtype)
+    pdbdf.loc[teridx,'atype']=''
+    return
+
 def getpdbdffromstr(pdbstr,skiprows=0,skipend=False):
     '''
     this is for pdb files with one model and no header
@@ -62,10 +74,11 @@ def getpdbdffromstr(pdbstr,skiprows=0,skipend=False):
     sio=StringIO(pdbstr)
     pdbdf=pd.read_csv(sio,sep='\s+',header=None,skiprows=skiprows,
                       names=cnames,on_bad_lines='skip',index_col=False)
-    #label the columns
     #optionally eliminate the "end" and "ter" rows
     if(skipend):
         pdbdf=pdbdf.iloc[:-2]
+    #the TER entries don't have an atom name so they need to be fixed
+    fixTer(pdbdf)
     return pdbdf
 
 def getpdbdf(fpath,skiprows=0,skipend=False):
@@ -111,7 +124,7 @@ def starRecordDF(lines):
     df=pd.read_csv(sio,sep='\s+',header=None,names=header)
     return df
 
-def getmmcifdfs(fname):
+def getmmcifdfs(fname,renamepdbcolumns=True):
     '''
     read only the coordinate information from a mmcif file and return as dataframes
     output columns are type,atom,atype,resname,chain,residue,x,y,z,unk,temp,element
@@ -129,13 +142,21 @@ def getmmcifdfs(fname):
     pdbdfs=[]
     for i in range(len(pdbloops)):
         pdbdf=starRecordDF(pdbloops[i])
-        #get the subset of desired columns
-        pdbdf=pdbdf[['group_PDB','id','label_atom_id','label_comp_id','label_asym_id','label_seq_id',
-               'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']]
-        #rename to my standard names
-        pdbdf=pdbdf.rename(columns={'group_PDB':'type','id':'atom','label_atom_id':'atype','label_comp_id':'resname',
-                       'label_asym_id':'chain','label_seq_id':'residue','Cartn_x':'x','Cartn_y':'y','Cartn_z':'z',
-                       'occupancy':'unk','B_iso_or_equiv':'temp','type_symbol':'element'})
+        #sometimes the column names have spaces
+        pdbdf.columns = pdbdf.columns.str.strip()
+        if(renamepdbcolumns):
+            #get the subset of desired columns
+            #pdbdf=pdbdf[['group_PDB','id','label_atom_id','label_comp_id','label_asym_id','label_seq_id',
+            #       'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']]
+            pdbdf=pdbdf[['group_PDB','id','label_atom_id','label_comp_id','auth_asym_id','label_seq_id',
+                    'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']]
+            #rename to my standard names
+            #pdbdf=pdbdf.rename(columns={'group_PDB':'type','id':'atom','label_atom_id':'atype','label_comp_id':'resname',
+            #               'label_asym_id':'chain','label_seq_id':'residue','Cartn_x':'x','Cartn_y':'y','Cartn_z':'z',
+            #               'occupancy':'unk','B_iso_or_equiv':'temp','type_symbol':'element'})
+            pdbdf=pdbdf.rename(columns={'group_PDB':'type','id':'atom','label_atom_id':'atype','label_comp_id':'resname',
+                           'auth_asym_id':'chain','label_seq_id':'residue','Cartn_x':'x','Cartn_y':'y','Cartn_z':'z',
+                           'occupancy':'unk','B_iso_or_equiv':'temp','type_symbol':'element'})
         pdbdfs.append(pdbdf)
     return pdbdfs
 
@@ -212,6 +233,18 @@ def writepdbdf(df,outpath=None,verbose=False,useter=True):
         with open(outpath,'w') as f:
             f.write(pdbstr)
     return pdbstr
+
+def addTer(pdbdf):
+    '''
+    adds a terminus line to the pdbdf
+    '''
+    teratom=pdbdf['atom'].values[-1]
+    terres=pdbdf['resname'].values[-1]
+    terresidx=pdbdf['residue'].values[-1]+1
+    chainname=pdbdf['chain'].values[-1]
+    pdbdf.loc[len(pdbdf)]=['TER',teratom,'',terres,chainname,terresidx,
+                           np.nan,np.nan,np.nan,np.nan,np.nan,'']
+    return pdbdf
 
 def getFASTA(fpath):
     '''
@@ -739,3 +772,12 @@ def getDNANSeq(pdbdf):
     nadf=pdbdf[isAn | isGn | isTn | isCn]
     seq=''.join(nadf['resname'].str[1])
     return nadf,seq
+
+def getMinDist(pdbdf1,pdbdf2):
+    '''
+    get the min distance between two pdbdfs
+    '''
+    crd1=pdbdf1[['x','y','z']].values
+    crd2=pdbdf2[['x','y','z']].values
+    dists2=[((crd-crd2)**2).sum(axis=1) for crd in crd1]
+    return np.sqrt(np.min(dists2))
