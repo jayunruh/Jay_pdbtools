@@ -11,3 +11,10 @@ This is a collection of python tools to read protein data bank (pdb) files into 
 *calc_mlp_jru*: implementation of the ChimeraX (https://www.cgl.ucsf.edu/chimerax/) lipophilcity calculation for measurements in 3D space.
 
 *hbond_tools*: functions to predict hydrogen bonding from donor/acceptor distances and angles (requires hydrogens be added prior to running).
+
+### Installation
+
+To install run
+```bash
+pip install git+https://github.com/jayunruh/Jay_pdbtools
+```
