@@ -148,8 +148,13 @@ def getmmcifdfs(fname,renamepdbcolumns=True):
             #get the subset of desired columns
             #pdbdf=pdbdf[['group_PDB','id','label_atom_id','label_comp_id','label_asym_id','label_seq_id',
             #       'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']]
-            pdbdf=pdbdf[['group_PDB','id','label_atom_id','label_comp_id','auth_asym_id','label_seq_id',
-                    'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']]
+            cifcols=['group_PDB','id','label_atom_id','label_comp_id','auth_asym_id','label_seq_id',
+                    'Cartn_x','Cartn_y','Cartn_z','occupancy','B_iso_or_equiv','type_symbol']
+            #if columns are missing, add them as nan values
+            for j in range(len(cifcols)):
+                if(cifcols[j] not in pdbdf.columns):
+                    pdbdf[cifcols[j]]=np.nan
+            pdbdf=pdbdf[cifcols]
             #rename to my standard names
             #pdbdf=pdbdf.rename(columns={'group_PDB':'type','id':'atom','label_atom_id':'atype','label_comp_id':'resname',
             #               'label_asym_id':'chain','label_seq_id':'residue','Cartn_x':'x','Cartn_y':'y','Cartn_z':'z',
@@ -399,9 +404,25 @@ def writeNdx(fname,label,poss,ncols=15):
         f.write(sb[1:]+' \n')
     return
 
-def getRMSD(pdbdf1,pdbdf2):
+def getRMSD(pdbdf1,pdbdf2,angstroms=False):
+    '''
+    get the RMSD for two (matched) pdbdfs in nanometer units
+    '''
     #assume that the atom sets are identical here (e.g. a set of ca values would be easiest)
-    return np.sqrt(((pdbdf2[['x','y','z']].values/10-pdbdf1[['x','y','z']].values/10)**2).sum(axis=1).mean())
+    #note units are nanometers
+    if(not angstroms):
+        return np.sqrt(((pdbdf2[['x','y','z']].values/10-pdbdf1[['x','y','z']].values/10)**2).sum(axis=1).mean())
+    else:
+        return np.sqrt(((pdbdf2[['x','y','z']].values-pdbdf1[['x','y','z']].values)**2).sum(axis=1).mean())
+
+def calcTM(cadf1,cadf2):
+    '''
+    calculate the TM score between two (matched) pre-aligned alpha carbon dataframes
+    '''
+    tlen=len(cadf1)
+    dists2=((cadf1[['x','y','z']].values-cadf2[['x','y','z']].values)**2).sum(axis=1)
+    d0=1.24*((tlen-15)**(1/3))-1.8
+    return (1.0/(1.0+(dists2/(d0*d0)))).sum()/tlen
 
 def alignFullRMSD(pdbdf1,pdbdf2,aset='ca'):
     '''
@@ -436,6 +457,9 @@ def transformpdbdf(pdbdf,com,trans=None,comdest=None):
     #this takes a center of mass and transformation from a subset
     #subtract the center of mass from the full data frame
     #then run the transformation
+    to align pdbdf2 to pdbdf1 (cadf is the alpha carbon subset):
+    run _,_,trans,_,com1,com2=alignRMSD(cadf1,cadf2)
+    then run transformpdbdf(pdbdf2,com2,trans=trans,comdest=com1)
     '''
     shiftdf=pdbdf.copy()
     shiftdf.loc[:,['x','y','z']]-=com
@@ -446,7 +470,7 @@ def transformpdbdf(pdbdf,com,trans=None,comdest=None):
         shiftdf.loc[:,['x','y','z']]+=comdest
     return shiftdf
 
-def alignRMSD(pdbdf1,pdbdf2):
+def alignRMSD(pdbdf1,pdbdf2,angstroms=False):
     '''
     #this aligns two identical sets of atoms to one another with best fit and returns the RMSD
     #assume that the atom sets are identical here
@@ -463,9 +487,9 @@ def alignRMSD(pdbdf1,pdbdf2):
     trans,rms=ss.transform.Rotation.align_vectors(shiftdf1.loc[:,['x','y','z']]/10,shiftdf2.loc[:,['x','y','z']]/10)
     trans2=trans.apply(shiftdf2.loc[:,['x','y','z']]/10)
     shiftdf2.loc[:,['x','y','z']]=(trans2*10).astype(np.float32)
-    return shiftdf1,shiftdf2,trans,getRMSD(shiftdf1,shiftdf2),com1,com2
+    return shiftdf1,shiftdf2,trans,getRMSD(shiftdf1,shiftdf2,angstroms),com1,com2
 
-def alignShiftRMSD(pdbdf1,pdbdf2,minshift=-10,maxshift=10):
+def alignShiftRMSD(pdbdf1,pdbdf2,minshift=-10,maxshift=10,angstroms=False):
     '''
     attempts to align two pdbdfs of different length with offset shifts
     brute force search approach minimizing RMSD
@@ -478,7 +502,7 @@ def alignShiftRMSD(pdbdf1,pdbdf2,minshift=-10,maxshift=10):
     for shift in range(minshift,maxshift+1):
         if(shift<0):
             minlen=min(len(pdbdf1)+shift,len(pdbdf2))
-            a1,a2,_,rmsd,_,_=alignRMSD(pdbdf1.iloc[-shift:(minlen-shift)],pdbdf2.iloc[:minlen])
+            a1,a2,_,rmsd,_,_=alignRMSD(pdbdf1.iloc[-shift:(minlen-shift)],pdbdf2.iloc[:minlen],angstroms)
             if(rmsd<minrmsd):
                 minrmsd=rmsd
                 bshift=minshift
@@ -486,7 +510,7 @@ def alignShiftRMSD(pdbdf1,pdbdf2,minshift=-10,maxshift=10):
                 b2=a2
         else:
             minlen=min(len(pdbdf1),len(pdbdf2)-shift)
-            a1,a2,_,rmsd,_,_=alignRMSD(pdbdf1.iloc[:minlen],pdbdf2.iloc[shift:(minlen+shift)])
+            a1,a2,_,rmsd,_,_=alignRMSD(pdbdf1.iloc[:minlen],pdbdf2.iloc[shift:(minlen+shift)],angstroms)
             if(rmsd<minrmsd):
                 minrmsd=rmsd
                 bshift=minshift
